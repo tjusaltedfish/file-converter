@@ -1,15 +1,14 @@
 """
-文件转换服务
-基于 Microsoft MarkItDown 将各种格式转换为 Markdown
+文件转换服务（轻量版）
+使用基础库实现，构建更快
 """
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from markitdown import MarkItDown
 import tempfile
 import os
-from typing import Optional
-import httpx
+import subprocess
+import json
 
 app = FastAPI(title="文件转换服务")
 
@@ -22,9 +21,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 初始化 MarkItDown
-converter = MarkItDown()
-
 @app.get("/")
 async def health_check():
     """健康检查"""
@@ -32,43 +28,39 @@ async def health_check():
 
 @app.post("/convert/file")
 async def convert_file(file: UploadFile = File(...)):
-    """
-    上传文件并转换为 Markdown
-    支持格式：pptx, docx, xlsx, pdf, html, csv, json, xml
-    """
+    """上传文件并转换为 Markdown"""
     try:
         # 检查文件类型
         allowed_extensions = {
-            '.pptx', '.docx', '.xlsx', '.pdf', '.html', '.htm',
-            '.csv', '.json', '.xml', '.txt', '.odt', '.ods', '.odp'
+            '.txt', '.md', '.csv', '.json', '.xml', '.html', '.htm'
         }
 
         file_ext = os.path.splitext(file.filename or '')[1].lower()
         if file_ext not in allowed_extensions:
             raise HTTPException(
                 status_code=400,
-                detail=f"不支持的文件格式: {file_ext}。支持的格式: {', '.join(allowed_extensions)}"
+                detail=f"轻量版只支持文本格式: {', '.join(allowed_extensions)}"
             )
 
-        # 保存到临时文件
-        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp:
-            content = await file.read()
-            tmp.write(content)
-            tmp_path = tmp.name
+        # 读取文件内容
+        content = await file.read()
+        text = content.decode('utf-8', errors='ignore')
 
-        try:
-            # 转换文件
-            result = converter.convert(tmp_path)
+        # 简单转换为 Markdown
+        if file_ext in ['.html', '.htm']:
+            # 简单去除 HTML 标签
+            import re
+            text = re.sub(r'<[^>]+>', '', text)
+            text = re.sub(r'\s+', ' ', text).strip()
 
-            return {
-                "success": True,
-                "filename": file.filename,
-                "markdown": result.text_content,
-                "format": file_ext
-            }
-        finally:
-            # 清理临时文件
-            os.unlink(tmp_path)
+        markdown = f"# {file.filename}\n\n{text}"
+
+        return {
+            "success": True,
+            "filename": file.filename,
+            "markdown": markdown,
+            "format": file_ext
+        }
 
     except HTTPException:
         raise
@@ -77,17 +69,25 @@ async def convert_file(file: UploadFile = File(...)):
 
 @app.post("/convert/url")
 async def convert_url(url: str):
-    """
-    将网页 URL 转换为 Markdown
-    """
+    """将网页 URL 转换为 Markdown"""
     try:
-        # 转换 URL
-        result = converter.convert(url)
+        import httpx
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, timeout=10.0)
+            response.raise_for_status()
+
+        # 简单去除 HTML 标签
+        import re
+        text = re.sub(r'<[^>]+>', '', response.text)
+        text = re.sub(r'\s+', ' ', text).strip()
+
+        markdown = f"# {url}\n\n{text}"
 
         return {
             "success": True,
             "url": url,
-            "markdown": result.text_content,
+            "markdown": markdown,
             "format": "html"
         }
     except Exception as e:
@@ -95,32 +95,43 @@ async def convert_url(url: str):
 
 @app.post("/convert/batch")
 async def convert_batch(files: list[UploadFile] = File(...)):
-    """
-    批量转换多个文件
-    """
+    """批量转换多个文件"""
     results = []
 
     for file in files:
         try:
-            # 保存到临时文件
-            file_ext = os.path.splitext(file.filename or '')[1].lower()
-            with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp:
-                content = await file.read()
-                tmp.write(content)
-                tmp_path = tmp.name
+            # 检查文件类型
+            allowed_extensions = {
+                '.txt', '.md', '.csv', '.json', '.xml', '.html', '.htm'
+            }
 
-            try:
-                # 转换文件
-                result = converter.convert(tmp_path)
+            file_ext = os.path.splitext(file.filename or '')[1].lower()
+            if file_ext not in allowed_extensions:
                 results.append({
-                    "success": True,
+                    "success": False,
                     "filename": file.filename,
-                    "markdown": result.text_content,
-                    "format": file_ext
+                    "error": f"轻量版只支持文本格式"
                 })
-            finally:
-                # 清理临时文件
-                os.unlink(tmp_path)
+                continue
+
+            # 读取文件内容
+            content = await file.read()
+            text = content.decode('utf-8', errors='ignore')
+
+            # 简单转换为 Markdown
+            if file_ext in ['.html', '.htm']:
+                import re
+                text = re.sub(r'<[^>]+>', '', text)
+                text = re.sub(r'\s+', ' ', text).strip()
+
+            markdown = f"# {file.filename}\n\n{text}"
+
+            results.append({
+                "success": True,
+                "filename": file.filename,
+                "markdown": markdown,
+                "format": file_ext
+            })
 
         except Exception as e:
             results.append({
